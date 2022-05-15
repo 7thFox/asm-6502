@@ -2,11 +2,11 @@
 #define PARSE_H
 
 #include "log.h"
-#include <stdlib.h>
-#include <stdio.h>
-#include <stdbool.h>
 #include <ctype.h>
+#include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 extern FILE *file_asm;
 extern FILE *file_bin;
@@ -17,16 +17,13 @@ char peek();
 
 void parse_start();
 
-typedef uint8_t byte;
+typedef uint8_t  byte;
+typedef uint16_t addr6502;
 
 typedef struct {
-    size_t bytes_start;
-    size_t bytes_end;
-} unlocated_bytes;
-
-typedef struct {
-    unlocated_bytes bytes;
     size_t address_start;
-} located_bytes;
+    size_t bytes_start;
+    size_t bytes_length;
+} byte_section;
 
 #endif

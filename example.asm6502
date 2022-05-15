@@ -1,19 +1,18 @@
 # ENDIAN_LITTLE
 
-ASCII "Place Me Anywhere"
+ASCII "ASCII value 1"
 
-OFFSET $FFFA
-# BYTES $0400 # NMI Vector
-# BYTES $0200 # Reset Vector
-# BYTES $0400 # IRQ/BRK Vector
-
+OFFSET $CAFE
 ASCII "Place Me at addr 0xFFFA"
 
-OFFSET NONE
+ASCII "ASCII value 2"
 
-ASCII "Place Me Anywhere"
+OFFSET $FFFA
+BYTES $0400 # NMI Vector
+BYTES $0200 # Reset Vector
+BYTES $0400 # IRQ/BRK Vector
 
-# OFFSET $FFC0
+# OFFSET $0400
 # data:
 #     BYTES $13AF69CAFEBABE
 #

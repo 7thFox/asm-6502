@@ -11,20 +11,15 @@ long pos_abs  = -1;
 long col      = -1;
 long line     = -1;
 
-uint64_t offset_current;
-bool     offset_is_set = false;
+uint64_t offset_current = 0;
 
 byte  *all_bytes;
 size_t all_bytes_cap;
 size_t all_bytes_len;
 
-size_t           unlocated_cap;
-size_t           unlocated_len;
-unlocated_bytes *unlocated;
-
-size_t         located_cap;
-size_t         located_len;
-located_bytes *located;
+size_t        byte_sections_cap;
+size_t        byte_sections_len;
+byte_section *byte_sections;
 
 #define arr_init(arr, cap, len, t, cap_0)                     \
     arr = malloc(sizeof(t) * cap_0);                          \
@@ -35,7 +30,7 @@ located_bytes *located;
     cap = cap_0;                                              \
     len = 0;
 
-#define arr_add(val, arr, cap, len, t, inc)                            \
+#define arr_add(val, arr, cap, len, t, inc)                       \
     if (len + 1 >= cap) {                                         \
         cap += inc;                                               \
         arr = realloc(arr, sizeof(t) * cap);                      \
@@ -114,30 +109,29 @@ void accept_char(char value_upper) {
     }
 }
 
+void add_section(size_t bytes_start, size_t bytes_end) {
+    byte_section b;
+    b.address_start = offset_current;
+    b.bytes_start   = bytes_start;
+    b.bytes_length  = bytes_end - bytes_start;
+
+    offset_current += b.bytes_length;
+
+    arr_add(b, byte_sections, byte_sections_cap, byte_sections_len, byte_section, 256);
+}
+
 void parse_line_start();
-void parse_skip_whitespace();
+void parse_skip_whitespace_and_comments();
 void parse_skip_inline_whitespace();
 void parse_comment();
 void parse_ASCII();
 void parse_OFFSET();
 
-uint64_t parse_hex_no_ws();
-
-void add_bytes(unlocated_bytes b) {
-    if (offset_is_set) {
-        located_bytes bb;
-        bb.bytes = b;
-        bb.address_start = offset_current;
-        arr_add(bb, located, located_cap, located_len, located_bytes, 256);
-    } else {
-        arr_add(b, unlocated, unlocated_cap, unlocated_len, unlocated_bytes, 256);
-    }
-}
+addr6502 parse_addr6502_no_ws();
 
 void parse_start() {
     arr_init(all_bytes, all_bytes_cap, all_bytes_len, byte, 4096);
-    arr_init(unlocated, unlocated_cap, unlocated_len, unlocated_bytes, 256);
-    arr_init(located, located_cap, located_len, located_bytes, 256);
+    arr_init(byte_sections, byte_sections_cap, byte_sections_len, byte_section, 256);
 
     buff_len = 0;
     buff_pos = 0;
@@ -145,43 +139,30 @@ void parse_start() {
     col      = 0;
     line     = 1;
 
-    parse_skip_whitespace();
+    parse_skip_whitespace_and_comments();
     while (!(buff_pos + 1 >= buff_len && feof(file_asm))) {
         parse_line_start();
     }
 
-
-    col      = -2;
-    line     = -2;
+    col  = -2;
+    line = -2;
 #if DEBUG
     debugf("Ended parse.\n");
-    debugf("UNLOCATED byte sections: %li", unlocated_len);
-    for (int i = 0; i < unlocated_len; i++) {
-        unlocated_bytes b = unlocated[i];
-        debugf("     ????: '%.*s'",
-               b.bytes_end - b.bytes_start,
+    debugf("Byte Sections: %li", byte_sections_len);
+    for (int i = 0; i < byte_sections_len; i++) {
+        byte_section b = byte_sections[i];
+        debugf("    $%04x: '%.*s'",
+               b.address_start,
+               b.bytes_length,
                all_bytes + b.bytes_start);
     }
 
-    debugf("LOCATED byte sections: %li", located_len);
-    for (int i = 0; i < located_len; i++) {
-        located_bytes b = located[i];
-        debugf("    $%x: '%.*s'",
-               b.address_start,
-               b.bytes.bytes_end - b.bytes.bytes_start,
-               all_bytes + b.bytes.bytes_start);
-    }
-
 #endif
-
 }
 
 void parse_line_start() {
     char p = peek();
     switch (p) {
-        case '#':
-            parse_comment();
-            break;
         case 'A':
         case 'a':
             parse_ASCII();
@@ -204,12 +185,19 @@ void parse_skip_inline_whitespace() {
     }
 }
 
-void parse_skip_whitespace() {
-    char p = peek();
-    while (p != EOF && isspace(p)) {
-        read();
-        p = peek();
-    }
+void parse_skip_whitespace_and_comments() {
+    do {
+        char p = peek();
+        if (p == '#') {
+            parse_comment();
+        }
+        else if (isspace(p)) {
+            read();
+        }
+        else {
+            break;
+        }
+    } while (true);
 }
 
 void parse_comment() {
@@ -220,7 +208,7 @@ void parse_comment() {
         read();
         p = peek();
     }
-    parse_skip_whitespace();
+    parse_skip_whitespace_and_comments();
 }
 
 void parse_ASCII() {
@@ -228,15 +216,13 @@ void parse_ASCII() {
     parse_skip_inline_whitespace();
     accept_char('"');
 
-    unlocated_bytes b;
-    b.bytes_start = all_bytes_len;
+    size_t start = all_bytes_len;
 
     while (true) {
         char c = read();
         if (c == '\\') {
             c = read();
-            switch (c)
-            {
+            switch (c) {
                 case '"':
                     arr_add('"', all_bytes, all_bytes_cap, all_bytes_len, byte, 1024);
                     break;
@@ -255,30 +241,24 @@ void parse_ASCII() {
             arr_add(c, all_bytes, all_bytes_cap, all_bytes_len, byte, 1024);
         }
     }
-    b.bytes_end = all_bytes_len;
-    add_bytes(b);
-    parse_skip_whitespace();
+
+    add_section(start, all_bytes_len);
+    parse_skip_whitespace_and_comments();
 }
 
-void parse_OFFSET(){
+void parse_OFFSET() {
     accept_string("OFFSET");
     parse_skip_inline_whitespace();
 
-    if (toupper(peek()) == 'N') {
-        accept_string("NONE");
-        offset_is_set = false;
-    } else {
-        offset_current = parse_hex_no_ws();
-        offset_is_set  = true;
-    }
+    offset_current = parse_addr6502_no_ws();
 
-    parse_skip_whitespace();
+    parse_skip_whitespace_and_comments();
 }
 
-uint64_t parse_hex_no_ws() {
-    uint64_t value = 0;
+addr6502 parse_addr6502_no_ws() {
+    addr6502 value = 0;
     accept_char('$');
-    long     abs_before = pos_abs;
+    long abs_before = pos_abs;
     while (true) {
         char c = peek();
         if (c >= '0' && c <= '9') {
@@ -295,13 +275,18 @@ uint64_t parse_hex_no_ws() {
             read();
             value <<= 4;
             value += c - 'A' + 0xA;
-        } else {
+        }
+        else {
             break;
         }
     }
 
     if (abs_before == pos_abs) {
         errorf("Expected at least one hex digit after $");
+        exit(1);
+    }
+    if (abs_before+4 < pos_abs) {
+        errorf("Addresses should be 4-char (16-bit) values");
         exit(1);
     }
     return value;
