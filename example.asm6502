@@ -1,0 +1,31 @@
+# ENDIAN_LITTLE
+
+ASCII "Place Me Anywhere"
+
+OFFSET $FFFA
+# BYTES $0400 # NMI Vector
+# BYTES $0200 # Reset Vector
+# BYTES $0400 # IRQ/BRK Vector
+
+ASCII "Place Me at addr 0xFFFA"
+
+OFFSET NONE
+
+ASCII "Place Me Anywhere"
+
+# OFFSET $FFC0
+# data:
+#     BYTES $13AF69CAFEBABE
+#
+# OFFSET $0200
+# adc_tests:
+#     ADC #$13 # hex immediate value
+#     ADC #19   # dec immediate value
+#     ADC $7F
+#     ADC $7F,X # test
+#     ADC $CAFE
+#     ADC $BABE,X
+#     ADC $CAFE,Y
+#     ADC ($BABE,X)
+#     ADC ($CAFE),Y
+#
