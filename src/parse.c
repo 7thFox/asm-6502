@@ -32,14 +32,14 @@ byte_section *byte_sections;
 
 #define arr_add(val, arr, cap, len, t, inc)                       \
     if (len + 1 >= cap) {                                         \
-        cap += inc;                                               \
+        cap += (inc);                                             \
         arr = realloc(arr, sizeof(t) * cap);                      \
         if (!arr) {                                               \
             errorf("Failed to reallocate internal parser array"); \
             exit(1);                                              \
         }                                                         \
     }                                                             \
-    arr[len] = val;                                               \
+    arr[len] = (val);                                             \
     len++;
 
 bool get_next_buffer() {
@@ -120,14 +120,56 @@ void add_section(size_t bytes_start, size_t bytes_end) {
     arr_add(b, byte_sections, byte_sections_cap, byte_sections_len, byte_section, 256);
 }
 
+byte char2byte(char c) {
+    if (c >= '0' && c <= '9') {
+        return c - '0';
+    }
+    else if (c >= 'a' && c <= 'f') {
+        return c - 'a' + 0xA;
+    }
+    else if (c >= 'A' && c <= 'F') {
+        return c - 'A' + 0xA;
+    }
+    return 0xFF;
+}
+
 void parse_line_start();
 void parse_skip_whitespace_and_comments();
 void parse_skip_inline_whitespace();
 void parse_comment();
+void parse_BYTES();
 void parse_ASCII();
 void parse_OFFSET();
 
 addr6502 parse_addr6502_no_ws();
+
+addr6502 parse_addr6502_no_ws() {
+    addr6502 value = 0;
+    accept_char('$');
+    long abs_before = pos_abs;
+    while (true) {
+        char c = peek();
+        byte b = char2byte(c);
+        if (b < 0x10) { // valid
+            read();
+            value <<= 4;
+            value += b;
+        }
+        else {
+            break;
+        }
+    }
+
+    if (abs_before == pos_abs) {
+        errorf("Expected at least one hex digit after $");
+        exit(1);
+    }
+    if (abs_before + 4 < pos_abs) {
+        errorf("Addresses should be 4-char (16-bit) values");
+        exit(1);
+    }
+    return value;
+}
 
 void parse_start() {
     arr_init(all_bytes, all_bytes_cap, all_bytes_len, byte, 4096);
@@ -151,10 +193,24 @@ void parse_start() {
     debugf("Byte Sections: %li", byte_sections_len);
     for (int i = 0; i < byte_sections_len; i++) {
         byte_section b = byte_sections[i];
-        debugf("    $%04x: '%.*s'",
-               b.address_start,
-               b.bytes_length,
-               all_bytes + b.bytes_start);
+        fprintf(stderr, "[DEBUG]   * $%04x: ", b.address_start);
+        byte *bs = all_bytes + b.bytes_start;
+#define NBYTES_PRINTED_PER_LINE 0x8
+        int ascii_offset = 0;
+        for (int i = 0; i < b.bytes_length; i++) {
+            if (i != 0 && i % NBYTES_PRINTED_PER_LINE == 0) {
+                fprintf(stderr, "  %.*s\n", NBYTES_PRINTED_PER_LINE, bs + ascii_offset);
+                fprintf(stderr, "            $%04x: ", b.address_start + i);
+                ascii_offset += NBYTES_PRINTED_PER_LINE;
+            }
+            fprintf(stderr, "%02x ", bs[i]);
+        }
+        int mod = (b.bytes_length % NBYTES_PRINTED_PER_LINE);
+        fprintf(stderr, "%.*s  %.*s\n", 3 * (NBYTES_PRINTED_PER_LINE - mod), "                         ", mod, bs + ascii_offset);
+        // if ()
+        // ,
+        //     b.bytes_length,
+        //     all_bytes + b.bytes_start
     }
 
 #endif
@@ -166,6 +222,10 @@ void parse_line_start() {
         case 'A':
         case 'a':
             parse_ASCII();
+            break;
+        case 'B':
+        case 'b':
+            parse_BYTES();
             break;
         case 'O':
         case 'o':
@@ -255,39 +315,87 @@ void parse_OFFSET() {
     parse_skip_whitespace_and_comments();
 }
 
-addr6502 parse_addr6502_no_ws() {
-    addr6502 value = 0;
+void parse_BYTES() {
+    accept_string("BYTES");
+    parse_skip_inline_whitespace();
     accept_char('$');
-    long abs_before = pos_abs;
+
+    size_t prev_buff_size_bytes = 0;
+    byte  *prev_buff            = NULL;
+    int    buff_pos_start = buff_pos + 1;// next char
     while (true) {
-        char c = peek();
-        if (c >= '0' && c <= '9') {
-            read();
-            value <<= 4;
-            value += c - '0';
+        if (buff_pos + 1 >= buff_len) { // about to peek into a new buffer
+            debugf("Copying old buffer before new buffer read");
+            size_t buff_inc = sizeof(byte) * (buff_len - buff_pos_start);
+            if (prev_buff) {
+                prev_buff = realloc(prev_buff, prev_buff_size_bytes + buff_inc);
+                if (!prev_buff) {
+                    errorf("Failed to reallocate internal parser array");
+                    exit(1);
+                }
+            }
+            else {
+                prev_buff = malloc(buff_inc);
+            }
+            memcpy(prev_buff + prev_buff_size_bytes, buffer + buff_pos_start, buff_inc);
+            prev_buff_size_bytes += buff_inc;
+            buff_pos_start = 0;
         }
-        else if (c >= 'a' && c <= 'f') {
-            read();
-            value <<= 4;
-            value += c - 'a' + 0xA;
-        }
-        else if (c >= 'A' && c <= 'F') {
-            read();
-            value <<= 4;
-            value += c - 'A' + 0xA;
-        }
-        else {
+        if (!isxdigit(peek())) {
             break;
         }
+        read();
     }
 
-    if (abs_before == pos_abs) {
+    byte  *added_bytes     = NULL;
+    size_t added_bytes_len = -1;
+    if (!prev_buff) {
+        added_bytes     = buffer + buff_pos_start;
+        added_bytes_len = buff_pos - buff_pos_start;
+    }
+    else {
+        if (buff_pos > 0) {
+            size_t buff_inc = sizeof(byte) * (buff_pos + 1);
+            prev_buff       = realloc(prev_buff, prev_buff_size_bytes + buff_inc);
+            if (!prev_buff) {
+                errorf("Failed to reallocate internal parser array");
+                exit(1);
+            }
+            memcpy(prev_buff + prev_buff_size_bytes, buffer, buff_inc);
+            prev_buff_size_bytes += buff_inc;
+        }
+        added_bytes     = prev_buff;
+        added_bytes_len = prev_buff_size_bytes / sizeof(byte);
+    }
+
+    if (added_bytes_len < 0 || !added_bytes) {
+        errorf("Something went wrong...");
+        exit(-1);
+    }
+
+    if (added_bytes_len == 0) {
         errorf("Expected at least one hex digit after $");
         exit(1);
     }
-    if (abs_before+4 < pos_abs) {
-        errorf("Addresses should be 4-char (16-bit) values");
-        exit(1);
+
+    size_t bytes_start = all_bytes_len;
+    if (added_bytes_len % 2 == 1) {
+        debugf("odd %i", added_bytes_len);
+        arr_add(char2byte(added_bytes[0]), all_bytes, all_bytes_cap, all_bytes_len, byte, 1024);
+        added_bytes = added_bytes + 1;
+        added_bytes_len--;
     }
-    return value;
+
+    for (int i = 0; i < added_bytes_len; i += 2) {
+        byte b = (char2byte(added_bytes[i]) << 4) | char2byte(added_bytes[i + 1]);
+        arr_add(b, all_bytes, all_bytes_cap, all_bytes_len, byte, 1024);
+    }
+
+    if (prev_buff) {
+        free(prev_buff);
+    }
+
+    add_section(bytes_start, all_bytes_len);
+
+    parse_skip_whitespace_and_comments();
 }
