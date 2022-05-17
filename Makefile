@@ -4,10 +4,10 @@ build: bin/
 	gcc src/*.c -o bin/asm-6502
 
 build-debug: bin/
-	gcc src/*.c -D DEBUG -o bin/asm-6502-debug
+	gcc src/*.c -D DEBUG -fdiagnostics-color=always -g -o bin/asm-6502-debug
 
 build-trace: bin/
-	gcc src/*.c -D TRACE -D DEBUG -o bin/asm-6502-trace
+	gcc src/*.c -D TRACE -D DEBUG -fdiagnostics-color=always -g -o bin/asm-6502-trace
 
 bin/:
 	mkdir bin

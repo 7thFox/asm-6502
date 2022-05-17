@@ -3,14 +3,6 @@
 FILE *file_asm = NULL;
 FILE *file_bin = NULL;
 
-#define BUFF_SIZE 4096
-char buffer[BUFF_SIZE];
-int  buff_len = -1;
-int  buff_pos = -1;
-long pos_abs  = -1;
-long col      = -1;
-long line     = -1;
-
 uint64_t offset_current = 0;
 
 byte  *all_bytes;
@@ -42,26 +34,50 @@ byte_section *byte_sections;
     arr[len] = (val);                                             \
     len++;
 
-bool get_next_buffer() {
-    buff_len = fread(buffer, sizeof(char), BUFF_SIZE, file_asm);
-    tracef("Read in new buffer of %i characters", buff_len);
-    if (ferror(file_asm)) {
-        errorf("Error reading from file");
-        exit(1);
-    }
+// TODO JOSH: Reconfigure buffer to alway contain the next 2/4k characters
+// basically having 2 buffers and swapping them around as needed
+// really you'd just have 1 buffer with 2 2k halfs. after reaching the
+// end of one (and into the other) we'll fread the other half. Then you can
+// wrap the index so arr[0] == arr[BUFF_LENGTH]. This also will simplify the
+// BYTES part; we just can't allow > 2k sections because we can't guarantee
+// it's all still in memory
+
+#define BUFF_SIZE     4096
+#define BUFF_BOUNDARY (BUFF_SIZE / 2)
+// we read the next half of the buffer as soon as we enter the next boundary.
+// Worst case we're at the end of this boundary and have the full 2048 bytes
+// to seek
+bool is_eof = false;
+char cyclic_buffer[BUFF_SIZE];
+long cyclic_buffer_pos = -1;
+long cyclic_buffer_len = -1;
+long pos_abs           = -1;
+long col               = -1;
+long line              = -1;
+
+void setup_cyclic_buffer() {
+    line = 1;
+    col  = 0;
+
+    cyclic_buffer_len = fread(cyclic_buffer, sizeof(char), BUFF_BOUNDARY, file_asm); // first read will read-behind the other 2k
 }
 
 char read() {
-    buff_pos++;
-    if (buff_pos >= buff_len) {
-        get_next_buffer();
-        if (!buff_len) {
-            return EOF;
-        }
-        buff_pos = 0;
+    cyclic_buffer_pos++;
+    if (is_eof && cyclic_buffer_pos >= cyclic_buffer_len) {
+        return EOF;
     }
 
-    char c = buffer[buff_pos];
+    int read_pos_abs = cyclic_buffer_pos % BUFF_SIZE;
+    if (!is_eof && read_pos_abs % BUFF_BOUNDARY == 0) {
+        size_t readbehind_offset = (read_pos_abs + BUFF_BOUNDARY) % BUFF_SIZE;
+        tracef("Reading to cyclic buffer to [%i]", readbehind_offset);
+        size_t nread = fread(cyclic_buffer + readbehind_offset, sizeof(char), BUFF_BOUNDARY, file_asm);
+        cyclic_buffer_len += nread;
+        is_eof = nread < BUFF_BOUNDARY;
+    }
+
+    char c = cyclic_buffer[read_pos_abs];
     pos_abs++;
     if (c == '\n') {
         line++;
@@ -77,19 +93,8 @@ char read() {
 }
 
 char peek() {
-    long peek_pos = buff_pos + 1;
-    if (peek_pos >= buff_len) {
-        get_next_buffer();
-        if (!buff_len) {
-            return EOF;
-        }
-        buff_pos = -1;
-        peek_pos = 0;
-    }
-
-    tracef("PEEK");
-
-    return buffer[peek_pos];
+    long peek_pos_abs = (cyclic_buffer_pos + 1) % BUFF_SIZE;
+    return cyclic_buffer[peek_pos_abs];
 }
 
 void accept_string(const char *value_upper) {
@@ -175,14 +180,10 @@ void parse_start() {
     arr_init(all_bytes, all_bytes_cap, all_bytes_len, byte, 4096);
     arr_init(byte_sections, byte_sections_cap, byte_sections_len, byte_section, 256);
 
-    buff_len = 0;
-    buff_pos = 0;
-    pos_abs  = 0;
-    col      = 0;
-    line     = 1;
+    setup_cyclic_buffer();
 
     parse_skip_whitespace_and_comments();
-    while (!(buff_pos + 1 >= buff_len && feof(file_asm))) {
+    while (!(cyclic_buffer_pos + 1 >= cyclic_buffer_len && feof(file_asm))) {
         parse_line_start();
     }
 
@@ -320,79 +321,29 @@ void parse_BYTES() {
     parse_skip_inline_whitespace();
     accept_char('$');
 
-    size_t prev_buff_size_bytes = 0;
-    byte  *prev_buff            = NULL;
-    int    buff_pos_start = buff_pos + 1;// next char
-    while (true) {
-        if (buff_pos + 1 >= buff_len) { // about to peek into a new buffer
-            debugf("Copying old buffer before new buffer read");
-            size_t buff_inc = sizeof(byte) * (buff_len - buff_pos_start);
-            if (prev_buff) {
-                prev_buff = realloc(prev_buff, prev_buff_size_bytes + buff_inc);
-                if (!prev_buff) {
-                    errorf("Failed to reallocate internal parser array");
-                    exit(1);
-                }
-            }
-            else {
-                prev_buff = malloc(buff_inc);
-            }
-            memcpy(prev_buff + prev_buff_size_bytes, buffer + buff_pos_start, buff_inc);
-            prev_buff_size_bytes += buff_inc;
-            buff_pos_start = 0;
-        }
-        if (!isxdigit(peek())) {
-            break;
-        }
-        read();
+    // we can peek up to 2k bytes before needing to read the next buffer
+    // worst-case (next byte is on boundary)
+    int seek_offset = 1;
+    while (seek_offset < BUFF_BOUNDARY && isxdigit(cyclic_buffer[(cyclic_buffer_pos + seek_offset) % BUFF_SIZE])) {
+        seek_offset++;
     }
 
-    byte  *added_bytes     = NULL;
-    size_t added_bytes_len = -1;
-    if (!prev_buff) {
-        added_bytes     = buffer + buff_pos_start;
-        added_bytes_len = buff_pos - buff_pos_start;
-    }
-    else {
-        if (buff_pos > 0) {
-            size_t buff_inc = sizeof(byte) * (buff_pos + 1);
-            prev_buff       = realloc(prev_buff, prev_buff_size_bytes + buff_inc);
-            if (!prev_buff) {
-                errorf("Failed to reallocate internal parser array");
-                exit(1);
-            }
-            memcpy(prev_buff + prev_buff_size_bytes, buffer, buff_inc);
-            prev_buff_size_bytes += buff_inc;
-        }
-        added_bytes     = prev_buff;
-        added_bytes_len = prev_buff_size_bytes / sizeof(byte);
-    }
-
-    if (added_bytes_len < 0 || !added_bytes) {
-        errorf("Something went wrong...");
-        exit(-1);
-    }
-
-    if (added_bytes_len == 0) {
-        errorf("Expected at least one hex digit after $");
+    if (seek_offset >= BUFF_BOUNDARY) {
+        errorf("BYTES exceeds the maximum length of %i characters (%i bytes). Break into smaller segments", BUFF_BOUNDARY, BUFF_BOUNDARY / 2);
         exit(1);
     }
 
     size_t bytes_start = all_bytes_len;
-    if (added_bytes_len % 2 == 1) {
-        debugf("odd %i", added_bytes_len);
-        arr_add(char2byte(added_bytes[0]), all_bytes, all_bytes_cap, all_bytes_len, byte, 1024);
-        added_bytes = added_bytes + 1;
-        added_bytes_len--;
+
+    if (seek_offset % 2 == 1) {
+        arr_add(char2byte(read()), all_bytes, all_bytes_cap, all_bytes_len, byte, 1024);
+        seek_offset--;
     }
 
-    for (int i = 0; i < added_bytes_len; i += 2) {
-        byte b = (char2byte(added_bytes[i]) << 4) | char2byte(added_bytes[i + 1]);
+    for (int i = 0; i < seek_offset; i += 2) {
+        byte b = char2byte(read()) << 4;
+        b |= char2byte(read());
         arr_add(b, all_bytes, all_bytes_cap, all_bytes_len, byte, 1024);
-    }
-
-    if (prev_buff) {
-        free(prev_buff);
     }
 
     add_section(bytes_start, all_bytes_len);
