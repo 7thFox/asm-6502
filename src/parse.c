@@ -323,16 +323,25 @@ void parse_BYTES() {
 
     // we can peek up to 2k bytes before needing to read the next buffer
     // worst-case (next byte is on boundary)
-    int seek_offset = 1;
-    while (seek_offset < BUFF_BOUNDARY && isxdigit(cyclic_buffer[(cyclic_buffer_pos + seek_offset) % BUFF_SIZE])) {
+    // however we still need to seek until [length bytes] + 1 to see the
+    // end of the bytes, and since I don't want a half-byte limit, we round
+    // it further down to (4096 / 2) - 2
+    int seek_offset = 0;
+    do {
         seek_offset++;
-    }
+        if (seek_offset >= (BUFF_BOUNDARY - 2)) {
+            errorf("BYTES exceeds the maximum length of %i characters (%i bytes). Break into smaller segments", (BUFF_BOUNDARY - 2), (BUFF_BOUNDARY - 2) / 2);
+            exit(1);
+        }
 
-    if (seek_offset >= BUFF_BOUNDARY) {
-        errorf("BYTES exceeds the maximum length of %i characters (%i bytes). Break into smaller segments", BUFF_BOUNDARY, BUFF_BOUNDARY / 2);
-        exit(1);
-    }
+        if (seek_offset + cyclic_buffer_pos > cyclic_buffer_len) {
+            errorf("I don't understand how my cyclic buffer actually works and I need to fix something here");
+            exit(-1);
+        }
 
+    } while (isxdigit(cyclic_buffer[(cyclic_buffer_pos + seek_offset) % BUFF_SIZE]));
+
+    seek_offset--; // current value is non-hex
     size_t bytes_start = all_bytes_len;
 
     if (seek_offset % 2 == 1) {
