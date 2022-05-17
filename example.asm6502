@@ -3,17 +3,22 @@ BYTES $cafebabecafebabecafebabe
 
 # ENDIAN_LITTLE
 
-# ASCII "ASCII value 1"
-#
-# OFFSET $CAFE
-# ASCII "Dem' cafe babes"
-#
-# ASCII "ASCII value 2"
-#
-# OFFSET $FFFA
-# BYTES $400 # NMI Vector
-# BYTES $0200 # Reset Vector
-# BYTES $0400 # IRQ/BRK Vector
+ASCII "ASCII value 1"
+
+OFFSET $CAFE
+ASCII "Dem' cafe babes"
+
+ASCII "ASCII value 2"
+
+OFFSET $FFFA
+BYTES $0400 # NMI Vector
+BYTES $0200 # Reset Vector
+BYTES $0400 # IRQ/BRK Vector
+
+
+OFFSET $0200
+start:
+    ASCII "Hello, World!"
 
 # OFFSET $0400
 # data:

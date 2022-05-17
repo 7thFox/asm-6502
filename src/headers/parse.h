@@ -9,6 +9,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if DEBUG
+#include <time.h>
+#endif
+
 extern FILE *file_asm;
 extern FILE *file_bin;
 
@@ -26,5 +30,12 @@ typedef struct {
     size_t bytes_start;
     size_t bytes_length;
 } byte_section;
+
+// this_is_the_max_label_length___________________________________:
+#define MAX_LABEL_LENGTH 64
+typedef struct {
+    const char *label;
+    addr6502    offset;
+} label_offset;
 
 #endif

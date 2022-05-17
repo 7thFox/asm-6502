@@ -13,6 +13,10 @@ size_t        byte_sections_cap;
 size_t        byte_sections_len;
 byte_section *byte_sections;
 
+size_t        label_offsets_cap;
+size_t        label_offsets_len;
+label_offset *label_offsets;
+
 #define arr_init(arr, cap, len, t, cap_0)                     \
     arr = malloc(sizeof(t) * cap_0);                          \
     if (!arr) {                                               \
@@ -145,6 +149,7 @@ void parse_comment();
 void parse_BYTES();
 void parse_ASCII();
 void parse_OFFSET();
+void parse_label();
 
 addr6502 parse_addr6502_no_ws();
 
@@ -177,26 +182,48 @@ addr6502 parse_addr6502_no_ws() {
 }
 
 void parse_start() {
+#if DEBUG
+    clock_t time_begin = clock();
+#endif
     arr_init(all_bytes, all_bytes_cap, all_bytes_len, byte, 4096);
-    arr_init(byte_sections, byte_sections_cap, byte_sections_len, byte_section, 256);
+    arr_init(label_offsets, label_offsets_cap, label_offsets_len, label_offset, 64);
+    arr_init(byte_sections, byte_sections_cap, byte_sections_len, byte_section, 128);
 
     setup_cyclic_buffer();
+
+#if DEBUG
+    clock_t time_end_init = clock();
+#endif
 
     parse_skip_whitespace_and_comments();
     while (!(cyclic_buffer_pos + 1 >= cyclic_buffer_len && feof(file_asm))) {
         parse_line_start();
     }
-
     col  = -2;
     line = -2;
+
 #if DEBUG
-    debugf("Ended parse.\n");
+    clock_t time_end_parse = clock();
+
+    fprintf(stderr, "\n");
+    debugf("Ended parse.");
+    debugf("    Total: %ims (%li clocks)", (time_end_parse - time_begin) / CLOCKS_PER_SEC / 1000, time_end_parse - time_begin);
+    debugf("    Init:  %ims (%li clocks)", (time_end_init - time_begin) / CLOCKS_PER_SEC / 1000, time_end_init - time_begin);
+    debugf("    Parse: %ims (%li clocks)", (time_end_parse - time_end_init) / CLOCKS_PER_SEC / 1000, time_end_parse - time_end_init);
+
+    fprintf(stderr, "\n");
+    debugf("Labels: %li", label_offsets_len);
+    for (int i = 0; i < label_offsets_len; i++) {
+        debugf("    $%04x = %s", label_offsets[i].offset, label_offsets[i].label);
+    }
+
+    fprintf(stderr, "\n");
     debugf("Byte Sections: %li", byte_sections_len);
     for (int i = 0; i < byte_sections_len; i++) {
         byte_section b = byte_sections[i];
         fprintf(stderr, "[DEBUG]   * $%04x: ", b.address_start);
         byte *bs = all_bytes + b.bytes_start;
-#define NBYTES_PRINTED_PER_LINE 0x8
+#define NBYTES_PRINTED_PER_LINE 0xF
         int ascii_offset = 0;
         for (int i = 0; i < b.bytes_length; i++) {
             if (i != 0 && i % NBYTES_PRINTED_PER_LINE == 0) {
@@ -207,11 +234,7 @@ void parse_start() {
             fprintf(stderr, "%02x ", bs[i]);
         }
         int mod = (b.bytes_length % NBYTES_PRINTED_PER_LINE);
-        fprintf(stderr, "%.*s  %.*s\n", 3 * (NBYTES_PRINTED_PER_LINE - mod), "                         ", mod, bs + ascii_offset);
-        // if ()
-        // ,
-        //     b.bytes_length,
-        //     all_bytes + b.bytes_start
+        fprintf(stderr, "%.*s  %.*s\n", 3 * (NBYTES_PRINTED_PER_LINE - mod), "                                                ", mod, bs + ascii_offset);
     }
 
 #endif
@@ -233,8 +256,9 @@ void parse_line_start() {
             parse_OFFSET();
             break;
         default:
-            errorf("Unexpected character '%c'.", p);
-            exit(1);
+            parse_label();
+            // errorf("Unexpected character '%c'.", p);
+            // exit(1);
     }
 }
 
@@ -357,5 +381,39 @@ void parse_BYTES() {
 
     add_section(bytes_start, all_bytes_len);
 
+    parse_skip_whitespace_and_comments();
+}
+
+void parse_label() {
+    int len = 0;
+    for (; len <= MAX_LABEL_LENGTH; len++) {
+        if (cyclic_buffer[(cyclic_buffer_pos + len + 1) % BUFF_SIZE] == ':') {
+            break;
+        }
+    }
+
+    if (len == 0) {
+        errorf("Label has no name");
+        exit(1);
+    }
+    if (len > MAX_LABEL_LENGTH) {
+        errorf("Label exceeds max length of %i characters", MAX_LABEL_LENGTH);
+        exit(1);
+    }
+
+    char *name = malloc(sizeof(char) * (len + 1));
+    memcpy(name, cyclic_buffer + ((cyclic_buffer_pos + 1)) % BUFF_SIZE, len);
+    name[len] = '\0';
+
+    label_offset l;
+    l.label = name;
+    l.offset = offset_current;
+    arr_add(l, label_offsets, label_offsets_cap, label_offsets_len, label_offset, 64);
+
+    // TODO JOSH: Do this better
+    for (int i = 0; i < len; i++)
+        read();
+
+    accept_char(':');
     parse_skip_whitespace_and_comments();
 }
